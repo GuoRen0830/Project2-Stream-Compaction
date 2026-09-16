@@ -15,23 +15,23 @@ namespace StreamCompaction {
         __global__ void kernUpSweep(int n, int d, int* data) {
             int index = blockIdx.x * blockDim.x + threadIdx.x;
             
-            int stride = 1 << (d + 1);
-            int k = index * stride;
+            size_t stride = 1 << (d + 1);
+            size_t k = static_cast<size_t>(index) * stride;
 
-            if (k < n) {
-                data[k + stride - 1] += data[k + (1 << d) - 1];
+            if (k < static_cast<size_t>(n)) {
+                data[k + stride - 1] += data[k + (size_t(1) << d) - 1];
             }
         }
 
         __global__ void kernDownSweep(int n, int d, int* data) {
             int index = blockIdx.x * blockDim.x + threadIdx.x;
 
-            int stride = 1 << (d + 1);
-            int k = index * stride;
+            size_t stride = size_t(1) << (d + 1);
+            size_t k = static_cast<size_t>(index) * stride;
 
-            if (k < n) {
-                int left = k + (1 << d) - 1;
-                int right = k + stride - 1;
+            if (k < static_cast<size_t>(n)) {
+                size_t left = k + (size_t(1) << d) - 1;
+                size_t right = k + stride - 1;
 
                 int temp = data[left];
                 data[left] = data[right];
@@ -51,13 +51,15 @@ namespace StreamCompaction {
             cudaMemset(dev_data, 0, paddedSize * sizeof(int));
             cudaMemcpy(dev_data, idata, n * sizeof(int), cudaMemcpyHostToDevice);
 
-            const int blockSize = 128;
-            const int blocks = (paddedSize + blockSize - 1) / blockSize;
+            const int blockSize = 512;
             
             timer().startGpuTimer();
 
             // Up Sweep
             for (int d = 0; d < depth; ++d) {
+                int activeThreads = paddedSize >> (d + 1);
+                int blocks = (activeThreads + blockSize - 1) / blockSize;
+
                 kernUpSweep << <blocks, blockSize >> > (paddedSize, d, dev_data);
             }
 
@@ -66,10 +68,15 @@ namespace StreamCompaction {
 
             // Down Sweep
             for (int d = depth - 1; d >= 0; --d) {
+                int activeThreads = paddedSize >> (d + 1);
+                int blocks = (activeThreads + blockSize - 1) / blockSize;
+
                 kernDownSweep << <blocks, blockSize >> > (paddedSize, d, dev_data);
             }
             
             timer().endGpuTimer();
+
+            checkCUDAError("Efficient scan");
 
             cudaMemcpy(odata, dev_data, n * sizeof(int), cudaMemcpyDeviceToHost);
 
